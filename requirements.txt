@@ -1,0 +1,13 @@
+# Main dependencies
+streamlit>=1.28.0
+pandas>=2.0.0
+plotly>=5.18.0
+bcrypt>=4.0.1
+openai>=1.6.0
+
+# Data analysis and visualization
+numpy>=1.24.0
+scipy>=1.10.0
+
+# For production deployment
+watchdog>=3.0.0  # Optional: for better file watching on some platforms
