@@ -19,8 +19,7 @@ credentials = service_account.Credentials.from_service_account_info(sa_info)
 
 # 3. Instantiate BigQuery client with those credentials
 bq_client = bigquery.Client(
-    credentials=credentials,
-    project=sa_info["project_id"]
+    credentials=credentials
 )
 
 PROJECT_ID = "tactical-hope-401012"
