@@ -19,14 +19,15 @@ credentials = service_account.Credentials.from_service_account_info(sa_info)
 
 # 3. Instantiate BigQuery client with those credentials
 bq_client = bigquery.Client(
-    credentials=credentials
+    credentials=credentials,
+    project=sa_info["project_id"]
 )
+
 
 PROJECT_ID = "tactical-hope-401012"
 DATASET_ID = "knyguklubas"
 
-# Instantiate a BigQuery client once
-bq_client = bigquery.Client(project=PROJECT_ID)
+
 
 # Fully qualified table IDs
 MEMBERS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.members"
