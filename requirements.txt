@@ -11,3 +11,5 @@ scipy>=1.10.0
 
 # For production deployment
 watchdog>=3.0.0  # Optional: for better file watching on some platforms
+db-dtypes
+google-cloud-bigquery
