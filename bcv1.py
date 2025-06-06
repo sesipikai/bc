@@ -1,70 +1,75 @@
 import streamlit as st
 import pandas as pd
 import os
-import plotly.express as px
+from google.cloud import bigquery
 import bcrypt
 import openai
+import plotly.express as px
+import numpy as np
+from scipy.stats import gaussian_kde
+import plotly.graph_objects as go
+from google.cloud import bigquery
+from google.oauth2 import service_account
+
+# 1. Fetch the nested table from st.secrets
+sa_info = st.secrets["bq_service_account"]
+
+# 2. Build a Credentials object from that dict
+credentials = service_account.Credentials.from_service_account_info(sa_info)
+
+# 3. Instantiate BigQuery client with those credentials
+bq_client = bigquery.Client(
+    credentials=credentials,
+    project=sa_info["project_id"]
+)
+
+PROJECT_ID = "tactical-hope-401012"
+DATASET_ID = "knyguklubas"
+
+# Instantiate a BigQuery client once
+bq_client = bigquery.Client(project=PROJECT_ID)
+
+# Fully qualified table IDs
+MEMBERS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.members"
+BOOKS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.books"
+REVIEWS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.reviews"
 
 # -----------------------------
-# Initialization and Helpers
+# Helper Functions (BigQuery)
 # -----------------------------
 
-# Define file paths
-MEMBERS_FILE = "members.csv"
-BOOKS_FILE = "books.csv"
-REVIEWS_FILE = "reviews.csv"
 
-
-# Initialize CSV files if they don't exist
-def initialize_csv():
-    if not os.path.exists(MEMBERS_FILE):
-        # Added "gender" column for members
-        df_members = pd.DataFrame(columns=["id", "name", "gender"])
-        df_members.to_csv(MEMBERS_FILE, index=False)
-    if not os.path.exists(BOOKS_FILE):
-        # Added "dominant_perspective" column for books
-        df_books = pd.DataFrame(
-            columns=[
-                "id",
-                "title",
-                "author",
-                "country",
-                "goodreads_avg",
-                "suggested_by",
-                "season_no",
-                "dominant_perspective",
-            ]
-        )
-        df_books.to_csv(BOOKS_FILE, index=False)
-    if not os.path.exists(REVIEWS_FILE):
-        df_reviews = pd.DataFrame(columns=["id", "book_id", "member_id", "rating", "comment"])
-        df_reviews.to_csv(REVIEWS_FILE, index=False)
-
-
-initialize_csv()
-
-
-# Helper Functions
 def load_members():
+    """Load all rows from the BigQuery 'members' table into a pandas DataFrame."""
+    query = f"SELECT * FROM `{MEMBERS_TABLE}`"
     try:
-        return pd.read_csv(MEMBERS_FILE)
+        df = bq_client.query(query).to_dataframe()
+        return df
     except Exception as e:
-        st.error(f"Error loading members: {e}")
+        st.error(f"Error loading members from BigQuery: {e}")
         return pd.DataFrame(columns=["id", "name", "gender"])
 
 
-def save_members(df):
+def save_members(df: pd.DataFrame):
+    """
+    Overwrite the entire BigQuery 'members' table with the contents of df.
+    If the table does not exist yet, it will be created.
+    """
+    job_config = bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
     try:
-        df.to_csv(MEMBERS_FILE, index=False)
+        bq_client.load_table_from_dataframe(df, MEMBERS_TABLE, job_config=job_config).result()
     except Exception as e:
-        st.error(f"Error saving members: {e}")
+        st.error(f"Error saving members to BigQuery: {e}")
 
 
 def load_books():
+    """Load all rows from the BigQuery 'books' table into a pandas DataFrame."""
+    query = f"SELECT * FROM `{BOOKS_TABLE}`"
     try:
-        return pd.read_csv(BOOKS_FILE)
+        df = bq_client.query(query).to_dataframe()
+        return df
     except Exception as e:
-        st.error(f"Error loading books: {e}")
+        st.error(f"Error loading books from BigQuery: {e}")
         return pd.DataFrame(
             columns=[
                 "id",
@@ -79,36 +84,54 @@ def load_books():
         )
 
 
-def save_books(df):
+def save_books(df: pd.DataFrame):
+    """
+    Overwrite the entire BigQuery 'books' table with the contents of df.
+    """
+    job_config = bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
     try:
-        df.to_csv(BOOKS_FILE, index=False)
+        bq_client.load_table_from_dataframe(df, BOOKS_TABLE, job_config=job_config).result()
     except Exception as e:
-        st.error(f"Error saving books: {e}")
+        st.error(f"Error saving books to BigQuery: {e}")
 
 
 def load_reviews():
+    """Load all rows from the BigQuery 'reviews' table into a pandas DataFrame."""
+    query = f"SELECT * FROM `{REVIEWS_TABLE}`"
     try:
-        return pd.read_csv(REVIEWS_FILE)
+        df = bq_client.query(query).to_dataframe()
+        if "rating" in df.columns:
+            df["rating"] = pd.to_numeric(df["rating"], errors="coerce")  # Ensure 'rating' is numeric
+        return df
     except Exception as e:
-        st.error(f"Error loading reviews: {e}")
+        st.error(f"Error loading reviews from BigQuery: {e}")
         return pd.DataFrame(columns=["id", "book_id", "member_id", "rating", "comment"])
 
 
-def save_reviews(df):
+def save_reviews(df: pd.DataFrame):
+    """
+    Overwrite the entire BigQuery 'reviews' table with the contents of df.
+    """
+    job_config = bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
     try:
-        df.to_csv(REVIEWS_FILE, index=False)
+        bq_client.load_table_from_dataframe(df, REVIEWS_TABLE, job_config=job_config).result()
     except Exception as e:
-        st.error(f"Error saving reviews: {e}")
+        st.error(f"Error saving reviews to BigQuery: {e}")
 
 
-def get_next_id(df):
+def get_next_id(df: pd.DataFrame) -> int:
+    """Return next integer ID (max + 1) or 1 if df is empty."""
     if df.empty:
         return 1
     else:
-        return df["id"].max() + 1
+        return int(df["id"].max()) + 1
 
 
-# Password Verification Function
+# -----------------------------
+# Password Verification
+# -----------------------------
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plaintext password against the hashed version."""
     return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
@@ -118,14 +141,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # Authentication Functions
 # -----------------------------
 
-# Initialize Session State for Authentication
 if "authentication_status" not in st.session_state:
     st.session_state["authentication_status"] = False
     st.session_state["username"] = ""
     st.session_state["role"] = ""
 
 
-# Login Function
 def login():
     st.title("📚 Book Club Management App - Login")
 
@@ -135,14 +156,12 @@ def login():
         submit_button = st.form_submit_button("Login")
 
     if submit_button:
-        # Retrieve users from secrets.toml
         try:
-            users = st.secrets["users"]  # This will be a list of dictionaries
+            users = st.secrets["users"]
         except KeyError:
             st.error("Users not found in secrets.toml.")
             return
 
-        # Search for the user
         user_found = False
         for user in users:
             if user["username"] == username_input:
@@ -150,7 +169,7 @@ def login():
                 if verify_password(password_input, user["password"]):
                     st.session_state["authentication_status"] = True
                     st.session_state["username"] = username_input
-                    st.session_state["role"] = user.get("role", "user")  # Default to 'user' if role not specified
+                    st.session_state["role"] = user.get("role", "user")
                     st.success(f"Logged in as {username_input}")
                 else:
                     st.error("Incorrect password.")
@@ -159,7 +178,6 @@ def login():
             st.error("Username not found.")
 
 
-# Logout Function
 def logout():
     if st.sidebar.button("Logout"):
         st.session_state["authentication_status"] = False
@@ -176,7 +194,6 @@ def add_member():
     st.header("Add a New Member")
     with st.form("member_form"):
         name = st.text_input("Member Name")
-        # Added gender selection for members
         gender = st.selectbox("Select Gender", options=["Male", "Female"])
         submitted = st.form_submit_button("Add Member")
         if submitted:
@@ -207,7 +224,6 @@ def add_book():
             return
         suggested_by = st.selectbox("Suggested By", options=df_members["name"].tolist())
         season_no = st.number_input("Season Number", min_value=1, step=1)
-        # New dominant perspective selection input
         dominant_perspective = st.selectbox("Dominant Perspective", options=["Male", "Female", "Neutral"], index=2)
         submitted = st.form_submit_button("Add Book")
         if submitted:
@@ -246,18 +262,19 @@ def add_review():
         return
     book_options = df_books["title"].tolist()
     selected_book = st.selectbox("Select a Book", options=book_options)
+
     df_members = load_members()
     if df_members.empty:
         st.warning("No members available. Please add members first.")
         return
     selected_members = st.multiselect("Select Members to Review", options=df_members["name"].tolist())
+
     if selected_members:
         with st.form("review_form"):
             ratings = {}
             comments = {}
             for member in selected_members:
                 st.markdown(f"### Review by {member}")
-                # Changed from slider to number_input
                 ratings[member] = st.number_input(
                     f"Rating for {member}", min_value=0.0, max_value=5.0, value=3.0, step=0.1, key=f"rating_{member}"
                 )
@@ -268,18 +285,15 @@ def add_review():
                 book_id = df_books[df_books["title"] == selected_book]["id"].values[0]
                 for member_name in selected_members:
                     member_id = df_members[df_members["name"] == member_name]["id"].values[0]
-                    # Check if review already exists
                     existing_review = df_reviews[
                         (df_reviews["book_id"] == book_id) & (df_reviews["member_id"] == member_id)
                     ]
                     if not existing_review.empty:
-                        # Update existing review
                         df_reviews.loc[
                             (df_reviews["book_id"] == book_id) & (df_reviews["member_id"] == member_id),
                             ["rating", "comment"],
                         ] = [ratings[member_name], comments[member_name]]
                     else:
-                        # Create new review
                         new_id = get_next_id(df_reviews)
                         new_review = pd.DataFrame(
                             [
@@ -310,28 +324,21 @@ def edit_review():
         st.warning("No reviews available to edit.")
         return
 
-    # Select a book first
     book_options = df_books["title"].tolist()
     selected_book = st.selectbox("Select a Book to Edit Reviews", options=book_options)
-
-    # Get the book_id
     book_id = df_books[df_books["title"] == selected_book]["id"].values[0]
 
-    # Filter reviews for the selected book
     book_reviews = df_reviews[df_reviews["book_id"] == book_id].copy()
-
     if book_reviews.empty:
         st.info("No reviews found for this book.")
         return
 
-    # Merge with members to get member names; rename the review id to "id_review" to avoid key conflicts
     book_reviews = book_reviews.rename(columns={"id": "id_review"}).merge(
         df_members, left_on="member_id", right_on="id", suffixes=("_review", "_member")
     )
 
     st.subheader(f"Editing Reviews for '{selected_book}'")
 
-    # Create a form to edit all reviews for the selected book
     with st.form("edit_reviews_form"):
         edited_reviews = []
         for idx, row in book_reviews.iterrows():
@@ -367,12 +374,10 @@ def edit_book():
         st.warning("No books available to edit.")
         return
 
-    # Select a book to edit
     book_options = df_books["title"].tolist()
     selected_book = st.selectbox("Select a Book to Edit", options=book_options)
 
     if selected_book:
-        # Get the book's current data
         book_data = df_books[df_books["title"] == selected_book].iloc[0]
         book_id = book_data["id"]
         current_author = book_data["author"]
@@ -389,7 +394,6 @@ def edit_book():
             new_goodreads_avg = st.number_input(
                 "Goodreads Average Rating", min_value=0.0, max_value=5.0, step=0.1, value=float(current_goodreads_avg)
             )
-            # Handle cases where 'suggested_by' might not be in members list
             members_list = load_members()["name"].tolist()
             if current_suggested_by in members_list:
                 suggested_by_index = members_list.index(current_suggested_by)
@@ -411,7 +415,6 @@ def edit_book():
                 if new_title.strip() == "":
                     st.error("Title cannot be empty.")
                 else:
-                    # Check if the new title already exists (and is not the current book)
                     if new_title != selected_book and new_title in df_books["title"].values:
                         st.error("Another book with this title already exists.")
                     else:
@@ -449,12 +452,10 @@ def member_reviews():
         st.warning("Insufficient data to display member reviews.")
         return
 
-    # Merge data from reviews, books, and members
     df = df_reviews.merge(df_books, left_on="book_id", right_on="id", suffixes=("_review", "_book"))
     df = df.merge(df_members, left_on="member_id", right_on="id", suffixes=("", "_member"))
     df.rename(columns={"name": "Member", "title": "Book Title"}, inplace=True)
 
-    # Add "All Members" option
     members = ["All Members"] + df_members["name"].tolist()
     selected_member = st.selectbox("Select a Member to View Their Reviews", options=members)
 
@@ -521,14 +522,10 @@ def member_reviews():
 def predictor():
     st.header("Predictor")
 
-    # Input field for a book title to predict
     book_to_predict = st.text_input("Enter Book Title for Prediction")
-
-    # Button to trigger the prediction API call
     if st.button("Send Predictions"):
         st.write("Gathering member review data for prediction...")
 
-        # Load data from CSV files
         df_books = load_books()
         df_members = load_members()
         df_reviews = load_reviews()
@@ -536,19 +533,16 @@ def predictor():
             st.warning("Insufficient data to run prediction.")
             return
 
-        # Merge review, book, and member data
         df = df_reviews.merge(df_books, left_on="book_id", right_on="id", suffixes=("_review", "_book"))
         df = df.merge(df_members, left_on="member_id", right_on="id", suffixes=("", "_member"))
         df.rename(columns={"name": "Member", "title": "Book Title"}, inplace=True)
 
-        # If a book title is specified, filter the data accordingly.
         if book_to_predict:
             df = df[df["Book Title"].str.contains(book_to_predict, case=False, na=False)]
             if df.empty:
                 st.warning(f"No reviews found for book title: {book_to_predict}")
                 return
 
-        # Select the same columns as in the member reviews page.
         member_data = df[
             [
                 "Member",
@@ -581,10 +575,9 @@ Output your result in a clear, tabular format.
 """
         st.write("Sending prompt to GPT...")
 
-        # Retrieve OpenAI API key from st.secrets (ensure your key is provided)
         try:
             openai_api_key = st.secrets["openai_api_key"]
-        except Exception as e:
+        except Exception:
             st.error("OpenAI API key not found in st.secrets. Please provide your API key.")
             return
 
@@ -606,63 +599,97 @@ Output your result in a clear, tabular format.
 def view_charts():
     st.header("📊 Data Visualizations")
 
-    # Load data
     df_books = load_books()
     df_members = load_members()
-    df_reviews = load_reviews()
+    df_reviews = load_reviews()  # 'rating' column is now numeric
 
     if df_books.empty or df_members.empty or df_reviews.empty:
         st.warning("Insufficient data to display charts.")
         return
 
-    # Merge data for analysis
     df = df_reviews.merge(df_books, left_on="book_id", right_on="id", suffixes=("_review", "_book"))
     df = df.merge(df_members, left_on="member_id", right_on="id", suffixes=("", "_member"))
     df.rename(columns={"name": "Member", "title": "Book Title"}, inplace=True)
 
-    # Selector for filtering by members (used for scatter and histogram)
     st.subheader("Filter Data")
     member_options = df["Member"].unique().tolist()
     selected_members = st.multiselect("Filter by Members", options=member_options, default=member_options)
-    if selected_members:
-        filtered_df = df[df["Member"].isin(selected_members)]
-    else:
-        filtered_df = df.copy()
+    filtered_df = df[df["Member"].isin(selected_members)] if selected_members else df.copy()
 
     if filtered_df.empty:
         st.info("No data available for the selected filter.")
         return
 
-    # ---------------------------
     # Chart 1: Scatter Plot (Club vs Goodreads)
-    # ---------------------------
-    group_avg = (
-        filtered_df.groupby("book_id")["rating"].mean().reset_index().rename(columns={"rating": "group_avg_rating"})
-    )
-    plot_df = filtered_df.merge(group_avg, on="book_id", how="left")
-    # Color mapping: season 1 = blue, season 2 = red
+    # Calculate mean club ratings per book. This Series should be numeric.
+    mean_club_ratings_series = filtered_df.groupby("book_id")["rating"].mean()
+
+    top_3_books = []
+    bottom_1_book = []
+
+    if not mean_club_ratings_series.empty:
+        # Ensure the series is numeric before calling nlargest/nsmallest
+        if pd.api.types.is_numeric_dtype(mean_club_ratings_series):
+            top_3_books = mean_club_ratings_series.nlargest(2).index.tolist()
+            bottom_1_book = mean_club_ratings_series.nsmallest(1).index.tolist()
+        else:
+            st.warning("Average club ratings per book are not numeric. Cannot determine top/bottom books for labels.")
+            # top_3_books and bottom_1_book remain empty
+
+    # Create DataFrame for merging, this contains the 'group_avg_rating'
+    group_avg_df = mean_club_ratings_series.reset_index().rename(columns={"rating": "group_avg_rating"})
+    plot_df = filtered_df.merge(group_avg_df, on="book_id", how="left")
+
+    # Ensure 'goodreads_avg' and 'group_avg_rating' in plot_df are numeric for the plot
+    if "goodreads_avg" in plot_df.columns:
+        plot_df["goodreads_avg"] = pd.to_numeric(plot_df["goodreads_avg"], errors="coerce")
+    # 'group_avg_rating' should already be numeric from mean_club_ratings_series
+    # but an explicit conversion here can be a safeguard if needed.
+    if "group_avg_rating" in plot_df.columns:
+        plot_df["group_avg_rating"] = pd.to_numeric(plot_df["group_avg_rating"], errors="coerce")
+
     color_map = {1: "blue", 2: "red"}
+    if "season_no" in plot_df.columns:  # Ensure season_no is int for mapping
+        plot_df["season_no"] = pd.to_numeric(plot_df["season_no"], errors="coerce").fillna(0).astype(int)
+
     plot_df["season_color"] = plot_df["season_no"].map(color_map)
-    x_min, x_max = 2, 5
-    y_min, y_max = 2, 5
-    actual_min = plot_df[["goodreads_avg", "group_avg_rating"]].min().min()
-    actual_max = plot_df[["goodreads_avg", "group_avg_rating"]].max().max()
-    if actual_min < x_min or actual_max > x_max:
-        x_min = min(0, actual_min - 1)
-        x_max = max(5, actual_max + 1)
-    if actual_min < y_min or actual_max > y_max:
-        y_min = min(0, actual_min - 1)
-        y_max = max(5, actual_max + 1)
-    # Label top (top 2) and bottom (lowest 1) books
-    top_3_books = plot_df.groupby("book_id")["group_avg_rating"].mean().nlargest(2).index.tolist()
-    bottom_1_book = plot_df.groupby("book_id")["group_avg_rating"].mean().nsmallest(1).index.tolist()
-    plot_df["label"] = plot_df["book_id"].apply(
-        lambda x: (
-            plot_df[plot_df["book_id"] == x]["Book Title"].iloc[0] if (x in top_3_books or x in bottom_1_book) else ""
+
+    x_min_default, x_max_default = 2.0, 5.0  # Use floats for consistency
+    y_min_default, y_max_default = 2.0, 5.0
+
+    # Safely calculate plot limits
+    numeric_plot_data = plot_df[["goodreads_avg", "group_avg_rating"]].dropna()
+    if not numeric_plot_data.empty:
+        actual_min = numeric_plot_data.min().min()
+        actual_max = numeric_plot_data.max().max()
+        x_min = min(x_min_default, actual_min - 0.5 if pd.notna(actual_min) else x_min_default)
+        x_max = max(x_max_default, actual_max + 0.5 if pd.notna(actual_max) else x_max_default)
+        y_min = min(y_min_default, actual_min - 0.5 if pd.notna(actual_min) else y_min_default)
+        y_max = max(y_max_default, actual_max + 0.5 if pd.notna(actual_max) else y_max_default)
+    else:
+        x_min, x_max = x_min_default, x_max_default
+        y_min, y_max = y_min_default, y_max_default
+
+    # Safely create labels
+    plot_df["label"] = ""  # Initialize label column
+    if "Book Title" in plot_df.columns and (top_3_books or bottom_1_book):
+        # Create a mapping from book_id to Book Title for unique titles
+        # Ensure 'Book Title' is not NaN before using it.
+        book_id_to_title = (
+            plot_df.dropna(subset=["Book Title"])
+            .drop_duplicates(subset=["book_id"])[["book_id", "Book Title"]]
+            .set_index("book_id")["Book Title"]
         )
-    )
+
+        def get_label(book_id_val):
+            if book_id_val in top_3_books or book_id_val in bottom_1_book:
+                return book_id_to_title.get(book_id_val, "")  # Use .get for safety
+            return ""
+
+        plot_df["label"] = plot_df["book_id"].apply(get_label)
+
     fig_scatter = px.scatter(
-        plot_df,
+        plot_df.dropna(subset=["goodreads_avg", "group_avg_rating"]),  # Plot only valid numeric points
         x="goodreads_avg",
         y="group_avg_rating",
         color="season_no",
@@ -682,9 +709,7 @@ def view_charts():
     fig_scatter.update_layout(width=700, height=700, showlegend=False, margin=dict(l=50, r=50, t=50, b=50))
     fig_scatter.update_traces(textposition="top center", textfont=dict(size=10))
 
-    # ---------------------------
-    # Chart 2: Male vs Female Average Ratings per Book (Colored by Dominant Perspective)
-    # ---------------------------
+    # Chart 2: Male vs Female Average Ratings per Book
     df_reviews_members = df_reviews.merge(df_members, left_on="member_id", right_on="id", suffixes=("", "_member"))
     gender_avg = df_reviews_members.groupby(["book_id", "gender"])["rating"].mean().reset_index()
     pivot = gender_avg.pivot(index="book_id", columns="gender", values="rating").reset_index()
@@ -715,33 +740,14 @@ def view_charts():
     else:
         st.info("Not enough gender data to display Male vs Female chart.")
 
-    # ---------------------------
-    # Chart 3: Histogram of Ratings (Smoothed via KDE) with Overall, Male, and Female lines
-    # ---------------------------
-    import numpy as np
-    from scipy.stats import gaussian_kde
-
+    # Chart 3: Histogram of Ratings (Smoothed via KDE)
     ratings = filtered_df["rating"].dropna().values
     x_grid = np.linspace(0, 5, 200)
-    if len(ratings) > 0:
-        kde_overall = gaussian_kde(ratings)
-        density_overall = kde_overall(x_grid)
-    else:
-        density_overall = np.zeros_like(x_grid)
+    density_overall = gaussian_kde(ratings)(x_grid) if len(ratings) > 0 else np.zeros_like(x_grid)
     male_ratings = filtered_df[filtered_df["gender"] == "Male"]["rating"].dropna().values
-    if len(male_ratings) > 0:
-        kde_male = gaussian_kde(male_ratings)
-        density_male = kde_male(x_grid)
-    else:
-        density_male = np.zeros_like(x_grid)
+    density_male = gaussian_kde(male_ratings)(x_grid) if len(male_ratings) > 0 else np.zeros_like(x_grid)
     female_ratings = filtered_df[filtered_df["gender"] == "Female"]["rating"].dropna().values
-    if len(female_ratings) > 0:
-        kde_female = gaussian_kde(female_ratings)
-        density_female = kde_female(x_grid)
-    else:
-        density_female = np.zeros_like(x_grid)
-
-    import plotly.graph_objects as go
+    density_female = gaussian_kde(female_ratings)(x_grid) if len(female_ratings) > 0 else np.zeros_like(x_grid)
 
     fig_hist = go.Figure()
     fig_hist.add_trace(go.Scatter(x=x_grid, y=density_overall, mode="lines", name="Overall"))
@@ -756,13 +762,10 @@ def view_charts():
         margin=dict(l=50, r=50, t=50, b=50),
     )
 
-    # ---------------------------
     # Chart 4: Horizontal Bar Chart: Books Rating by Reviews Gender
-    # (Sorted by average Female rating descending)
-    # ---------------------------
     df_gender_books = filtered_df.groupby(["Book Title", "gender"])["rating"].mean().reset_index()
+    fig_gender_bar = None
     if not df_gender_books.empty:
-        # Pivot to sort by female ratings descending
         pivot_sort = df_gender_books.pivot(index="Book Title", columns="gender", values="rating").reset_index()
         if "Female" in pivot_sort.columns:
             pivot_sort = pivot_sort.sort_values(by="Female", ascending=False)
@@ -784,12 +787,8 @@ def view_charts():
             height=700,
             margin=dict(l=50, r=50, t=50, b=50),
         )
-    else:
-        fig_gender_bar = None
 
-    # ---------------------------
-    # Chart 5: Top Books by Average Rating (Bar Chart)
-    # ---------------------------
+    # Chart 5: Top Books by Average Rating
     top_books = df.groupby("Book Title")["rating"].mean().sort_values(ascending=False).reset_index()
     fig_bar_books = px.bar(
         top_books,
@@ -806,9 +805,7 @@ def view_charts():
         margin=dict(l=50, r=50, t=50, b=50),
     )
 
-    # ---------------------------
-    # Chart 6: Each User's Average Rating (Bar Chart)
-    # ---------------------------
+    # Chart 6: Each User's Average Rating
     user_avg = df.groupby("Member")["rating"].mean().reset_index()
     user_avg_sorted = user_avg.sort_values(by="rating", ascending=False)
     fig_bar_users = px.bar(
@@ -826,9 +823,7 @@ def view_charts():
         margin=dict(l=50, r=50, t=50, b=50),
     )
 
-    # ---------------------------
-    # Chart 7: Average Rating of Books by Submitter (Bar Chart)
-    # ---------------------------
+    # Chart 7: Average Rating of Books by Submitter
     df_reviews_books = df_reviews.merge(df_books, left_on="book_id", right_on="id", suffixes=("_review", "_book"))
     avg_rating_submitter = df_reviews_books.groupby("suggested_by")["rating"].mean().reset_index()
     avg_rating_submitter = avg_rating_submitter.rename(
@@ -850,9 +845,7 @@ def view_charts():
         margin=dict(l=50, r=50, t=50, b=50),
     )
 
-    # ---------------------------
-    # Chart 8: Each Member's Accumulated Difference from Goodreads Average (Bar Chart)
-    # ---------------------------
+    # Chart 8: Each Member's Accumulated Difference from Goodreads Average
     df["difference"] = df["rating"] - df["goodreads_avg"]
     member_diff = df.groupby("Member")["difference"].sum().reset_index()
     member_diff_sorted = member_diff.sort_values(by="difference", ascending=False)
@@ -907,16 +900,10 @@ def view_charts():
         st.plotly_chart(fig_bar_diff, use_container_width=True)
 
 
-# -----------------------------
-# Main Application Function
-# -----------------------------
-
-
 def main_app():
     st.set_page_config(page_title="Book Club App", layout="wide")
     st.title("📚 Book Club Management App")
 
-    # Sidebar Navigation
     st.sidebar.title("Navigation")
     username = st.session_state["username"]
     role = st.session_state["role"]
