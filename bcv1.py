@@ -1386,102 +1386,54 @@ def predictor():
             results_header_html += "</div>"
             st.markdown(results_header_html, unsafe_allow_html=True)
 
-            # Display enhanced prediction cards
+            # Display predictions as a simple, clean table
+            st.subheader("🎯 Prediction Results")
+            
+            # Create DataFrame from predictions
+            prediction_data = []
             for prediction in predictions:
                 member_name = prediction.get('member', 'Unknown Member')
                 predicted_score = prediction.get('predicted_score', 0.0)
                 confidence = prediction.get('confidence', 'Unknown')
                 reasoning = prediction.get('reasoning', 'No reasoning provided')
                 
-                # Enhanced card with confidence indicator
-                score_color = get_score_color(predicted_score)
-                confidence_class = f"confidence-{confidence.lower()}" if confidence.lower() in ['high', 'medium', 'low'] else "confidence-medium"
-                
-                card_html = f"""
-                <div style="
-                    background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
-                    border: 1px solid #e1e8ed;
-                    border-radius: 16px;
-                    padding: 24px;
-                    margin: 16px 0;
-                    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-                    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-                    position: relative;
-                    overflow: hidden;
-                    backdrop-filter: blur(10px);
-                " onmouseover="this.style.transform='translateY(-4px) scale(1.01)'; this.style.boxShadow='0 8px 32px rgba(0,0,0,0.12)'"
-                   onmouseout="this.style.transform='translateY(0) scale(1)'; this.style.boxShadow='0 4px 20px rgba(0,0,0,0.08)'">
-                    
-                    <div style="
-                        position: absolute;
-                        top: 0;
-                        left: 0;
-                        width: 5px;
-                        height: 100%;
-                        background: linear-gradient(180deg, {score_color}, {score_color}dd);
-                        border-radius: 0 4px 4px 0;
-                    "></div>
-                    
-                    <div style="
-                        display: flex; 
-                        justify-content: space-between; 
-                        align-items: flex-start; 
-                        margin-bottom: 16px;
-                        flex-wrap: wrap;
-                        gap: 12px;
-                    ">
-                        <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px;">
-                            <h4 style="
-                                margin: 0;
-                                color: #2c3e50;
-                                font-size: 1.3em;
-                                font-weight: 700;
-                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                                letter-spacing: -0.3px;
-                            ">{html.escape(member_name)}</h4>
-                            <span class="confidence-badge {confidence_class}">{confidence}</span>
-                        </div>
-                        <div style="
-                            background: linear-gradient(135deg, {score_color}, {score_color}dd);
-                            color: white;
-                            padding: 10px 16px;
-                            border-radius: 25px;
-                            font-weight: 700;
-                            font-size: 1.3em;
-                            min-width: 60px;
-                            text-align: center;
-                            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
-                            letter-spacing: -0.5px;
-                        ">{predicted_score}</div>
-                    </div>
-                    
-                    <div style="
-                        color: #5a6c7d;
-                        line-height: 1.6;
-                        font-size: 1.0em;
-                        margin-top: 12px;
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                        padding: 16px;
-                        background: rgba(248, 249, 255, 0.6);
-                        border-radius: 12px;
-                        border: 1px solid rgba(225, 232, 237, 0.6);
-                    ">{html.escape(reasoning)}</div>
-                    
-                    <!-- Subtle decorative element -->
-                    <div style="
-                        position: absolute;
-                        top: -50px;
-                        right: -50px;
-                        width: 100px;
-                        height: 100px;
-                        background: radial-gradient(circle, {score_color}10, transparent);
-                        border-radius: 50%;
-                        pointer-events: none;
-                    "></div>
-                </div>
-                """
-                st.markdown(card_html, unsafe_allow_html=True)
+                prediction_data.append({
+                    'Member': member_name,
+                    'Predicted Score': f"{predicted_score:.1f}/5.0",
+                    'Confidence': confidence,
+                    'Reasoning': reasoning[:200] + "..." if len(reasoning) > 200 else reasoning
+                })
+            
+            # Display as a clean table
+            predictions_df = pd.DataFrame(prediction_data)
+            st.dataframe(
+                predictions_df,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "Member": st.column_config.TextColumn(
+                        "Member Name",
+                        help="Book club member",
+                        width="medium"
+                    ),
+                    "Predicted Score": st.column_config.TextColumn(
+                        "Predicted Rating",
+                        help="AI-predicted rating out of 5",
+                        width="small"
+                    ),
+                    "Confidence": st.column_config.TextColumn(
+                        "Confidence",
+                        help="AI confidence in prediction",
+                        width="small"
+                    ),
+                    "Reasoning": st.column_config.TextColumn(
+                        "AI Reasoning",
+                        help="Why the AI made this prediction",
+                        width="large"
+                    )
+                },
+                hide_index=True
+            )
 
             # Enhanced summary statistics with beautiful design
             if len(predictions) > 1:
