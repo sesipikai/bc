@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import html
+import re
 
 # 1. Fetch the nested table from st.secrets
 sa_info = st.secrets["bq_service_account"]
@@ -1287,8 +1288,10 @@ def predictor():
                         predictions[i] = {"member": "Unknown", "predicted_score": 0.0, "reasoning": "Invalid prediction format"}
                         continue
                     
-                    # Sanitize and validate prediction fields
-                    pred["member"] = str(pred.get("member", "Unknown Member"))[:100]  # Limit length
+                    # Sanitize and validate prediction fields - clean any HTML from member name
+                    member_name = str(pred.get("member", "Unknown Member"))
+                    member_name = re.sub(r'<[^>]+>', '', member_name)  # Strip HTML tags
+                    pred["member"] = member_name.strip()[:100]  # Limit length
                     
                     # Validate score
                     try:
@@ -1297,7 +1300,13 @@ def predictor():
                     except (ValueError, TypeError):
                         pred["predicted_score"] = 0.0
                         
-                    pred["reasoning"] = str(pred.get("reasoning", "No reasoning provided"))[:500]  # Limit length
+                    # Clean reasoning field - remove any HTML tags the AI might have included
+                    reasoning = str(pred.get("reasoning", "No reasoning provided"))
+                    # Remove HTML tags and unescape HTML entities
+                    reasoning = re.sub(r'<[^>]+>', '', reasoning)  # Strip HTML tags
+                    reasoning = reasoning.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')  # Unescape entities
+                    reasoning = reasoning.replace('&quot;', '"').replace('&#x27;', "'")  # More entities
+                    pred["reasoning"] = reasoning.strip()[:500]  # Limit length and trim whitespace
                     pred["confidence"] = str(pred.get("confidence", "Unknown"))[:20]  # Limit length
                     
             except Exception:
