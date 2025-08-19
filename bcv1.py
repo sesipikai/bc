@@ -4,7 +4,7 @@ import os
 import json
 from google.cloud import bigquery
 import bcrypt
-import openai
+from openai import OpenAI
 import plotly.express as px
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -953,7 +953,6 @@ def get_enhanced_predictions(target_book_title=None):
         openai_api_key = st.secrets["openai_api_key"]
         
         # Use modern OpenAI client with JSON mode
-        from openai import OpenAI
         client = OpenAI(api_key=openai_api_key)
         
         response = client.chat.completions.create(
@@ -986,8 +985,22 @@ def get_enhanced_predictions(target_book_title=None):
             }
     
     except Exception as e:
-        # Log the actual error but don't expose sensitive details to user
-        return {"error": "AI prediction service temporarily unavailable. Please try again."}
+        # Provide specific error handling for common OpenAI issues
+        error_msg = str(e)
+        if "401" in error_msg or "authentication" in error_msg.lower() or "api_key" in error_msg.lower():
+            return {"error": "OpenAI API authentication failed. Please check your API key."}
+        elif "429" in error_msg or "rate_limit" in error_msg.lower():
+            return {"error": "OpenAI API rate limit exceeded. Please try again in a few minutes."}
+        elif "400" in error_msg or "bad_request" in error_msg.lower():
+            return {"error": "OpenAI API request error. The input may be too long or invalid."}
+        elif "openai_api_key" in str(type(e)).lower():
+            return {"error": "OpenAI API key is missing from Streamlit secrets configuration."}
+        elif "importerror" in str(type(e)).lower() or "modulenotfounderror" in str(type(e)).lower():
+            return {"error": "OpenAI library not found. Please check requirements.txt installation."}
+        else:
+            # For debugging - show actual error but sanitize sensitive data
+            safe_error = error_msg.replace(st.secrets.get("openai_api_key", ""), "[API_KEY]") if "openai_api_key" in st.secrets else error_msg
+            return {"error": f"Prediction failed: {safe_error}"}
 
 
 def parse_llm_prediction(prediction_text):
