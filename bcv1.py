@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import json
 from google.cloud import bigquery
 import bcrypt
 import openai
@@ -10,6 +11,7 @@ from scipy.stats import gaussian_kde
 import plotly.graph_objects as go
 from google.cloud import bigquery
 from google.oauth2 import service_account
+import html
 
 # 1. Fetch the nested table from st.secrets
 sa_info = st.secrets["bq_service_account"]
@@ -39,6 +41,7 @@ REVIEWS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.reviews"
 # -----------------------------
 
 
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_members():
     """Load all rows from the BigQuery 'members' table into a pandas DataFrame."""
     query = f"SELECT * FROM `{MEMBERS_TABLE}`"
@@ -62,6 +65,7 @@ def save_members(df: pd.DataFrame):
         st.error(f"Error saving members to BigQuery: {e}")
 
 
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_books():
     """Load all rows from the BigQuery 'books' table into a pandas DataFrame."""
     query = f"SELECT * FROM `{BOOKS_TABLE}`"
@@ -95,6 +99,7 @@ def save_books(df: pd.DataFrame):
         st.error(f"Error saving books to BigQuery: {e}")
 
 
+@st.cache_data(ttl=300)  # Cache for 5 minutes  
 def load_reviews():
     """Load all rows from the BigQuery 'reviews' table into a pandas DataFrame."""
     query = f"SELECT * FROM `{REVIEWS_TABLE}`"
@@ -127,6 +132,42 @@ def get_next_id(df: pd.DataFrame) -> int:
         return int(df["id"].max()) + 1
 
 
+def display_error_card(title, message, error_type="error"):
+    """Display a modern error/warning/info card"""
+    colors = {
+        "error": {"bg": "#fee", "border": "#e74c3c", "icon": "❌"},
+        "warning": {"bg": "#ffeaa7", "border": "#fdcb6e", "icon": "⚠️"},
+        "info": {"bg": "#e3f2fd", "border": "#2196f3", "icon": "ℹ️"},
+        "success": {"bg": "#e8f5e8", "border": "#4caf50", "icon": "✅"}
+    }
+    
+    color_scheme = colors.get(error_type, colors["error"])
+    
+    card_html = f"""
+    <div style="
+        background: {color_scheme['bg']};
+        border-left: 4px solid {color_scheme['border']};
+        border-radius: 8px;
+        padding: 20px;
+        margin: 15px 0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    ">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 1.5em;">{color_scheme['icon']}</span>
+            <div>
+                <h4 style="margin: 0 0 8px 0; color: #2c3e50; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+                    {html.escape(str(title))}
+                </h4>
+                <p style="margin: 0; color: #5a6c7d; line-height: 1.4;">
+                    {html.escape(str(message))}
+                </p>
+            </div>
+        </div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
 # -----------------------------
 # Password Verification
 # -----------------------------
@@ -134,7 +175,11 @@ def get_next_id(df: pd.DataFrame) -> int:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plaintext password against the hashed version."""
-    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    try:
+        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    except Exception:
+        # Don't expose any sensitive information in case of error
+        return False
 
 
 # -----------------------------
@@ -162,20 +207,23 @@ def login():
             st.error("Users not found in secrets.toml.")
             return
 
-        user_found = False
-        for user in users:
-            if user["username"] == username_input:
-                user_found = True
-                if verify_password(password_input, user["password"]):
-                    st.session_state["authentication_status"] = True
-                    st.session_state["username"] = username_input
-                    st.session_state["role"] = user.get("role", "user")
-                    st.success(f"Logged in as {username_input}")
-                else:
-                    st.error("Incorrect password.")
-                break
-        if not user_found:
-            st.error("Username not found.")
+        try:
+            user_found = False
+            for user in users:
+                if user["username"] == username_input:
+                    user_found = True
+                    if verify_password(password_input, user["password"]):
+                        st.session_state["authentication_status"] = True
+                        st.session_state["username"] = username_input
+                        st.session_state["role"] = user.get("role", "user")
+                        st.success(f"Logged in as {username_input}")
+                    else:
+                        st.error("Invalid credentials.")
+                    break
+            if not user_found:
+                st.error("Invalid credentials.")
+        except Exception:
+            st.error("Authentication error occurred. Please try again.")
 
 
 def logout():
@@ -197,7 +245,9 @@ def add_member():
         gender = st.selectbox("Select Gender", options=["Male", "Female"])
         submitted = st.form_submit_button("Add Member")
         if submitted:
-            if name.strip() == "":
+            # Sanitize and validate input
+            name = name.strip()[:100]  # Limit length and trim whitespace
+            if name == "":
                 st.error("Name cannot be empty.")
             else:
                 df_members = load_members()
@@ -227,7 +277,12 @@ def add_book():
         dominant_perspective = st.selectbox("Dominant Perspective", options=["Male", "Female", "Neutral"], index=2)
         submitted = st.form_submit_button("Add Book")
         if submitted:
-            if title.strip() == "":
+            # Sanitize and validate inputs
+            title = title.strip()[:200]  # Limit length
+            author = author.strip()[:150]  # Limit length
+            country = country.strip()[:100]  # Limit length
+            
+            if title == "":
                 st.error("Title cannot be empty.")
             else:
                 df_books = load_books()
@@ -412,7 +467,12 @@ def edit_book():
             )
             submitted = st.form_submit_button("Update Book")
             if submitted:
-                if new_title.strip() == "":
+                # Sanitize and validate inputs
+                new_title = new_title.strip()[:200]
+                new_author = new_author.strip()[:150]
+                new_country = new_country.strip()[:100]
+                
+                if new_title == "":
                     st.error("Title cannot be empty.")
                 else:
                     if new_title != selected_book and new_title in df_books["title"].values:
@@ -519,81 +579,1042 @@ def member_reviews():
         st.table(member_df)
 
 
+def display_prediction_card(member_name, score, reasoning, score_color):
+    """Display a modern card for individual member prediction"""
+    card_html = f"""
+    <div style="
+        background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
+        border: 1px solid #e1e8ed;
+        border-radius: 12px;
+        padding: 20px;
+        margin: 10px 0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        position: relative;
+        overflow: hidden;
+    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 16px rgba(0,0,0,0.12)'"
+       onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 8px rgba(0,0,0,0.08)'">
+        
+        <div style="
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: {score_color};
+        "></div>
+        
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+            <h4 style="
+                margin: 0;
+                color: #2c3e50;
+                font-size: 1.2em;
+                font-weight: 600;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            ">{html.escape(member_name)}</h4>
+            <div style="
+                background: {score_color};
+                color: white;
+                padding: 6px 12px;
+                border-radius: 20px;
+                font-weight: 600;
+                font-size: 1.1em;
+                min-width: 50px;
+                text-align: center;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            ">{score}</div>
+        </div>
+        
+        <div style="
+            color: #5a6c7d;
+            line-height: 1.5;
+            font-size: 0.95em;
+            margin-top: 8px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        ">{html.escape(reasoning)}</div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
+@st.cache_data
+def get_score_color(score):
+    """Return color based on score range"""
+    try:
+        score_float = float(score)
+        if score_float >= 4.0:
+            return "#27ae60"  # Green for high scores
+        elif score_float >= 3.0:
+            return "#f39c12"  # Orange for medium scores
+        else:
+            return "#e74c3c"  # Red for low scores
+    except (ValueError, TypeError):
+        return "#95a5a6"  # Gray for invalid scores
+
+
+def display_loading_state():
+    """Display an elegant loading animation with enhanced visual effects"""
+    loading_html = """
+    <div style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 50px 30px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 20px;
+        margin: 30px 0;
+        color: white;
+        min-height: 200px;
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
+    ">
+        <!-- Animated background elements -->
+        <div style="
+            position: absolute;
+            top: -50px;
+            left: -50px;
+            width: 100px;
+            height: 100px;
+            background: radial-gradient(circle, rgba(255,255,255,0.1), transparent);
+            border-radius: 50%;
+            animation: float 6s ease-in-out infinite;
+        "></div>
+        <div style="
+            position: absolute;
+            bottom: -30px;
+            right: -30px;
+            width: 60px;
+            height: 60px;
+            background: radial-gradient(circle, rgba(255,255,255,0.08), transparent);
+            border-radius: 50%;
+            animation: float 8s ease-in-out infinite reverse;
+        "></div>
+        
+        <!-- Main loading spinner -->
+        <div style="
+            position: relative;
+            width: 60px;
+            height: 60px;
+            margin-bottom: 30px;
+        ">
+            <div style="
+                width: 60px;
+                height: 60px;
+                border: 3px solid rgba(255,255,255,0.2);
+                border-top: 3px solid rgba(255,255,255,0.8);
+                border-right: 3px solid rgba(255,255,255,0.6);
+                border-radius: 50%;
+                animation: spin 1.2s linear infinite;
+            "></div>
+            <div style="
+                position: absolute;
+                top: 15px;
+                left: 15px;
+                width: 30px;
+                height: 30px;
+                border: 2px solid rgba(255,255,255,0.3);
+                border-bottom: 2px solid rgba(255,255,255,0.8);
+                border-left: 2px solid rgba(255,255,255,0.6);
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite reverse;
+            "></div>
+        </div>
+        
+        <!-- Loading text with typing animation -->
+        <h3 style="
+            margin: 0 0 15px 0; 
+            color: white;
+            font-size: 1.4em;
+            font-weight: 600;
+            text-align: center;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        ">Analyzing Member Preferences<span class="dots">...</span></h3>
+        
+        <p style="
+            margin: 0;
+            opacity: 0.9;
+            text-align: center;
+            max-width: 400px;
+            line-height: 1.5;
+            font-size: 1.05em;
+        ">
+            Our AI is carefully examining reading patterns, historical ratings, and personal preferences to generate accurate, personalized predictions for each club member.
+        </p>
+        
+        <!-- Progress indicator -->
+        <div style="
+            width: 200px;
+            height: 4px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+            margin-top: 25px;
+            overflow: hidden;
+        ">
+            <div style="
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.8), transparent);
+                animation: progress 2s ease-in-out infinite;
+            "></div>
+        </div>
+    </div>
+    
+    <style>
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+        }
+        @keyframes progress {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        @keyframes dots {
+            0%, 20% { content: ''; }
+            40% { content: '.'; }
+            60% { content: '..'; }
+            80%, 100% { content: '...'; }
+        }
+        .dots::after {
+            content: '...';
+            animation: dots 1.5s infinite;
+        }
+    </style>
+    """
+    return st.markdown(loading_html, unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=600)  # Cache for 10 minutes since this is expensive to compute
+def gather_comprehensive_user_reviews():
+    """
+    Gather ALL reviews from each user for ALL books they've reviewed.
+    Returns a comprehensive dataset with member preferences and patterns.
+    """
+    df_books = load_books()
+    df_members = load_members()
+    df_reviews = load_reviews()
+    
+    if df_books.empty or df_members.empty or df_reviews.empty:
+        return pd.DataFrame()
+    
+    # Create comprehensive dataset with all relationships
+    comprehensive_df = df_reviews.merge(
+        df_books, left_on="book_id", right_on="id", suffixes=("_review", "_book")
+    ).merge(
+        df_members, left_on="member_id", right_on="id", suffixes=("", "_member")
+    )
+    
+    # Clean column names
+    comprehensive_df.rename(columns={
+        "name": "member_name", 
+        "title": "book_title"
+    }, inplace=True)
+    
+    return comprehensive_df
+
+
+def build_user_context_prompt(comprehensive_data, target_book_title=None):
+    """
+    Build enhanced context prompt with structured user analysis.
+    Creates detailed user profiles from ALL their review history.
+    """
+    if comprehensive_data.empty:
+        return "No review data available for analysis."
+    
+    user_profiles = []
+    
+    # Group by user to analyze individual reading patterns
+    for member_name in comprehensive_data['member_name'].unique():
+        member_reviews = comprehensive_data[
+            comprehensive_data['member_name'] == member_name
+        ].copy()
+        
+        # Calculate user statistics
+        avg_rating = member_reviews['rating'].mean()
+        total_reviews = len(member_reviews)
+        rating_std = member_reviews['rating'].std()
+        
+        # Analyze preferences
+        favorite_books = member_reviews.nlargest(3, 'rating')[['book_title', 'rating', 'comment']].to_dict('records')
+        least_favorite = member_reviews.nsmallest(1, 'rating')[['book_title', 'rating', 'comment']].to_dict('records')
+        
+        # Genre/country preferences
+        country_avg = member_reviews.groupby('country')['rating'].mean().sort_values(ascending=False)
+        author_avg = member_reviews.groupby('author')['rating'].mean().sort_values(ascending=False)
+        
+        # Build detailed profile
+        profile = {
+            'member_name': member_name,
+            'total_reviews': total_reviews,
+            'avg_rating': round(avg_rating, 2),
+            'rating_variance': round(rating_std, 2) if pd.notna(rating_std) else 0,
+            'favorite_books': favorite_books,
+            'least_favorite': least_favorite,
+            'country_preferences': dict(country_avg.head(3)),
+            'author_preferences': dict(author_avg.head(3)),
+            'recent_reviews': member_reviews.tail(3)[['book_title', 'rating', 'comment']].to_dict('records')
+        }
+        user_profiles.append(profile)
+    
+    # Build comprehensive prompt
+    context_sections = []
+    
+    for profile in user_profiles:
+        member_section = f"""
+USER: {profile['member_name']}
+- Total books reviewed: {profile['total_reviews']}
+- Average rating: {profile['avg_rating']}/5.0
+- Rating consistency: {'Consistent' if profile['rating_variance'] < 0.8 else 'Varied'} (σ={profile['rating_variance']})
+
+TOP RATED BOOKS:"""
+        
+        for book in profile['favorite_books']:
+            comment_snippet = (book['comment'][:60] + '...') if book['comment'] and len(book['comment']) > 60 else book['comment'] or 'No comment'
+            member_section += f"\n  • {book['book_title']}: {book['rating']}/5 - \"{comment_snippet}\""
+        
+        if profile['least_favorite']:
+            book = profile['least_favorite'][0]
+            comment_snippet = (book['comment'][:60] + '...') if book['comment'] and len(book['comment']) > 60 else book['comment'] or 'No comment'
+            member_section += f"\n\nLOWEST RATED:\n  • {book['book_title']}: {book['rating']}/5 - \"{comment_snippet}\""
+        
+        if profile['country_preferences']:
+            member_section += f"\n\nCOUNTRY PREFERENCES: {', '.join([f'{k}: {v:.1f}' for k, v in list(profile['country_preferences'].items())[:2]])}"
+        
+        if profile['author_preferences']:
+            member_section += f"\nAUTHOR PREFERENCES: {', '.join([f'{k}: {v:.1f}' for k, v in list(profile['author_preferences'].items())[:2]])}"
+        
+        context_sections.append(member_section)
+    
+    # Create final prompt
+    book_context = f" for the book '{target_book_title}'" if target_book_title else ""
+    
+    prompt = f"""You are analyzing book club members' reading preferences to predict ratings{book_context}.
+
+MEMBER READING PROFILES:
+{'='*50}
+{chr(10).join(context_sections)}
+
+TASK: Based on each member's complete reading history, predict their likely rating for future book selections. Consider:
+1. Their historical rating patterns and consistency
+2. Genre/country/author preferences shown in their reviews  
+3. Comments indicating what they value in books
+4. Rating trends over time
+
+REQUIRED OUTPUT FORMAT (valid JSON only):
+{{
+  "predictions": [
+    {{
+      "member": "Member Name",
+      "predicted_score": 4.2,
+      "confidence": "High",
+      "reasoning": "Based on their preference for literary fiction and consistent 4+ ratings for character-driven narratives, they would likely appreciate this type of book. Their comments show they value deep themes and strong prose."
+    }}
+  ]
+}}
+
+Predict scores between 1.0-5.0 with one decimal place. Provide specific reasoning based on their actual review history."""
+    
+    return prompt
+
+
+def get_enhanced_predictions(target_book_title=None):
+    """
+    Get enhanced predictions using modern OpenAI API with comprehensive user analysis.
+    Returns structured predictions with detailed reasoning.
+    """
+    # Gather comprehensive data
+    comprehensive_data = gather_comprehensive_user_reviews()
+    
+    if comprehensive_data.empty:
+        return {"error": "No review data available for analysis"}
+    
+    # Filter for specific book if requested
+    if target_book_title:
+        try:
+            book_filtered_data = comprehensive_data[
+                comprehensive_data['book_title'].str.contains(target_book_title, case=False, na=False)
+            ]
+            if not book_filtered_data.empty:
+                comprehensive_data = book_filtered_data
+        except Exception:
+            # If filtering fails, continue with all data
+            pass
+    
+    # Build enhanced prompt
+    prompt = build_user_context_prompt(comprehensive_data, target_book_title)
+    
+    try:
+        # Get OpenAI API key
+        openai_api_key = st.secrets["openai_api_key"]
+        
+        # Use modern OpenAI client with JSON mode
+        from openai import OpenAI
+        client = OpenAI(api_key=openai_api_key)
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Use latest efficient model
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "You are a book club expert who analyzes reading patterns. Always respond with valid JSON in the exact format requested."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            response_format={"type": "json_object"},  # Enforce JSON output
+            max_tokens=1500,
+            temperature=0.3  # Lower temperature for more consistent analysis
+        )
+        
+        prediction_json = response.choices[0].message.content.strip()
+        
+        # Parse JSON response
+        try:
+            result = json.loads(prediction_json)
+            return result
+        except json.JSONDecodeError as e:
+            return {
+                "error": "Failed to parse AI response. Please try again.", 
+                "raw_response": prediction_json if len(prediction_json) < 1000 else "Response too long to display"
+            }
+    
+    except Exception as e:
+        # Log the actual error but don't expose sensitive details to user
+        return {"error": "AI prediction service temporarily unavailable. Please try again."}
+
+
+def parse_llm_prediction(prediction_text):
+    """Parse the LLM prediction text into structured data (legacy fallback)"""
+    predictions = []
+    lines = prediction_text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('Member') or line.startswith('-') or line.startswith('|'):
+            continue
+            
+        # Try to parse different formats
+        parts = line.split('|') if '|' in line else line.split('\t')
+        if len(parts) >= 3:
+            member = parts[0].strip()
+            score = parts[1].strip()
+            reasoning = parts[2].strip()
+            
+            # Skip total/summary rows
+            if member.lower() in ['total', 'summary', 'group total', 'overall']:
+                continue
+                
+            predictions.append({
+                'member': member,
+                'score': score,
+                'reasoning': reasoning
+            })
+    
+    return predictions
+
+
 def predictor():
-    st.header("Predictor")
+    # Custom CSS for enhanced styling with mobile responsiveness
+    st.markdown("""
+    <style>
+    .prediction-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 30px 20px;
+        border-radius: 16px;
+        margin-bottom: 30px;
+        text-align: center;
+        box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+    }
+    .prediction-header h1 {
+        margin: 0;
+        font-size: 2.2em;
+        font-weight: 700;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    @media (max-width: 768px) {
+        .prediction-header h1 {
+            font-size: 1.8em;
+        }
+        .prediction-header {
+            padding: 20px 15px;
+        }
+    }
+    .prediction-header p {
+        margin: 10px 0 0 0;
+        opacity: 0.9;
+        font-size: 1.1em;
+        max-width: 600px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+    .stButton > button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 12px;
+        padding: 16px 32px;
+        font-weight: 600;
+        font-size: 1.1em;
+        transition: all 0.3s ease;
+        width: 100%;
+        min-height: 50px;
+        box-shadow: 0 4px 16px rgba(102, 126, 234, 0.2);
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+    }
+    .confidence-badge {
+        display: inline-block;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 0.85em;
+        font-weight: 600;
+        margin-left: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .confidence-high { 
+        background: linear-gradient(135deg, #e8f5e8 0%, #d4f4d4 100%); 
+        color: #1b5e20;
+        border: 1px solid #c8e6c9; 
+    }
+    .confidence-medium { 
+        background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); 
+        color: #e65100;
+        border: 1px solid #ffcc02; 
+    }
+    .confidence-low { 
+        background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); 
+        color: #b71c1c;
+        border: 1px solid #ef9a9a; 
+    }
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 20px;
+        margin: 20px 0;
+    }
+    @media (max-width: 768px) {
+        .summary-grid {
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+    }
+    .metric-card {
+        background: white;
+        padding: 20px;
+        border-radius: 12px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        border: 1px solid #e1e8ed;
+    }
+    .metric-value {
+        font-size: 2em;
+        font-weight: 700;
+        color: #2c3e50;
+        margin: 0;
+    }
+    .metric-label {
+        color: #5a6c7d;
+        font-size: 0.9em;
+        margin-top: 5px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    book_to_predict = st.text_input("Enter Book Title for Prediction")
-    if st.button("Send Predictions"):
-        st.write("Gathering member review data for prediction...")
+    # Header section
+    st.markdown("""
+    <div class="prediction-header">
+        <h1>📚 Enhanced Book Club Predictor</h1>
+        <p>AI-powered analysis of complete member reading histories for accurate predictions</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-        df_books = load_books()
-        df_members = load_members()
-        df_reviews = load_reviews()
-        if df_books.empty or df_members.empty or df_reviews.empty:
-            st.warning("Insufficient data to run prediction.")
-            return
+    # Enhanced input section with better mobile responsiveness
+    st.markdown("""
+    <div style="
+        background: rgba(248, 249, 255, 0.8);
+        padding: 25px;
+        border-radius: 16px;
+        margin: 20px 0;
+        border: 1px solid rgba(225, 232, 237, 0.6);
+        backdrop-filter: blur(10px);
+    ">
+        <h3 style="
+            color: #2c3e50;
+            margin: 0 0 15px 0;
+            font-size: 1.1em;
+            font-weight: 600;
+        ">🔍 Prediction Configuration</h3>
+        <p style="
+            color: #5a6c7d;
+            margin: 0 0 20px 0;
+            line-height: 1.5;
+            font-size: 0.95em;
+        ">
+            Configure your prediction analysis below. You can target a specific book or analyze general member preferences.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Input section with better UX - Mobile responsive
+    col1, col2 = st.columns([7, 3])
+    
+    with col1:
+        book_to_predict = st.text_input(
+            "📖 Book Title for Targeted Prediction (Optional)",
+            placeholder="e.g., The Great Gatsby, 1984, Pride and Prejudice...",
+            help="🎯 Enter a specific book title for targeted predictions, or leave empty for general rating predictions based on comprehensive member reading patterns and preferences.",
+            key="book_input"
+        )
+        
+        # Add some helpful suggestions
+        if not book_to_predict:
+            st.caption("💡 **Tip:** Leave empty to analyze general member preferences, or enter a book title for targeted predictions")
+    
+    with col2:
+        st.write("")  # Add spacing for alignment
+        st.write("")  # Add spacing for alignment
+        predict_button = st.button(
+            "🔮 Generate Enhanced Predictions", 
+            type="primary",
+            help="Click to start the AI analysis of member reading patterns",
+            use_container_width=True
+        )
 
-        df = df_reviews.merge(df_books, left_on="book_id", right_on="id", suffixes=("_review", "_book"))
-        df = df.merge(df_members, left_on="member_id", right_on="id", suffixes=("", "_member"))
-        df.rename(columns={"name": "Member", "title": "Book Title"}, inplace=True)
+    if predict_button:
+        # Loading state
+        loading_container = st.empty()
+        with loading_container:
+            display_loading_state()
 
-        if book_to_predict:
-            df = df[df["Book Title"].str.contains(book_to_predict, case=False, na=False)]
-            if df.empty:
-                st.warning(f"No reviews found for book title: {book_to_predict}")
+        # Use the new enhanced prediction system
+        try:
+            result = get_enhanced_predictions(book_to_predict if book_to_predict.strip() else None)
+            
+            # Clear loading state
+            loading_container.empty()
+            
+            # Handle errors
+            if "error" in result:
+                display_error_card(
+                    "Prediction Error", 
+                    result["error"], 
+                    "error"
+                )
+                if "raw_response" in result:
+                    with st.expander("🔍 Debug Information"):
+                        st.text_area("Raw API Response", result["raw_response"], height=200)
+                return
+            
+            # Extract predictions from JSON response
+            try:
+                predictions = result.get("predictions", [])
+                
+                if not predictions:
+                    display_error_card(
+                        "No Predictions Generated", 
+                        "The AI did not generate any predictions. This might be due to insufficient data or an API issue.", 
+                        "warning"
+                    )
+                    return
+                    
+                # Validate predictions structure
+                for i, pred in enumerate(predictions):
+                    if not isinstance(pred, dict):
+                        predictions[i] = {"member": "Unknown", "predicted_score": 0.0, "reasoning": "Invalid prediction format"}
+                        continue
+                    
+                    # Sanitize and validate prediction fields
+                    pred["member"] = str(pred.get("member", "Unknown Member"))[:100]  # Limit length
+                    
+                    # Validate score
+                    try:
+                        score = float(pred.get("predicted_score", 0.0))
+                        pred["predicted_score"] = max(0.0, min(5.0, score))  # Clamp between 0 and 5
+                    except (ValueError, TypeError):
+                        pred["predicted_score"] = 0.0
+                        
+                    pred["reasoning"] = str(pred.get("reasoning", "No reasoning provided"))[:500]  # Limit length
+                    pred["confidence"] = str(pred.get("confidence", "Unknown"))[:20]  # Limit length
+                    
+            except Exception:
+                display_error_card(
+                    "Data Processing Error", 
+                    "Failed to process prediction results. Please try again.", 
+                    "error"
+                )
                 return
 
-        member_data = df[
-            [
-                "Member",
-                "Book Title",
-                "author",
-                "country",
-                "season_no",
-                "goodreads_avg",
-                "dominant_perspective",
-                "rating",
-                "comment",
-            ]
-        ]
-        data_text = member_data.to_csv(index=False)
+            # Results header with enhanced info and better styling
+            results_header_html = """
+            <div style="
+                background: linear-gradient(135deg, #e8f5e8 0%, #f0f8f0 100%);
+                border-left: 5px solid #27ae60;
+                padding: 25px;
+                border-radius: 16px;
+                margin: 25px 0;
+                box-shadow: 0 4px 16px rgba(39, 174, 96, 0.1);
+            ">
+                <h2 style="
+                    margin: 0 0 12px 0;
+                    color: #1e5631;
+                    font-size: 1.8em;
+                    font-weight: 700;
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                ">
+                    🎯 Enhanced Prediction Results
+                </h2>
+            """
+            
+            if book_to_predict and book_to_predict.strip():
+                results_header_html += f"""
+                <div style="
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    color: #2d5a3d;
+                    font-size: 1.1em;
+                    font-weight: 500;
+                ">
+                    📖 <strong>Targeted Analysis:</strong> <em>"{book_to_predict.strip()}"</em>
+                </div>
+                <p style="
+                    margin: 8px 0 0 0;
+                    color: #4a6b5a;
+                    font-size: 0.95em;
+                    line-height: 1.4;
+                ">
+                    AI predictions specifically tailored for this book based on member reading patterns and preferences.
+                </p>
+                """
+            else:
+                results_header_html += """
+                <div style="
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    color: #2d5a3d;
+                    font-size: 1.1em;
+                    font-weight: 500;
+                ">
+                    📚 <strong>General Analysis:</strong> Member Reading Preferences
+                </div>
+                <p style="
+                    margin: 8px 0 0 0;
+                    color: #4a6b5a;
+                    font-size: 0.95em;
+                    line-height: 1.4;
+                ">
+                    Comprehensive predictions based on complete member reading histories and rating patterns.
+                </p>
+                """
+            
+            results_header_html += "</div>"
+            st.markdown(results_header_html, unsafe_allow_html=True)
 
-        st.write("Sending the following data to GPT for prediction:")
-        st.text_area("Data", data_text, height=200)
+            # Display enhanced prediction cards
+            for prediction in predictions:
+                member_name = prediction.get('member', 'Unknown Member')
+                predicted_score = prediction.get('predicted_score', 0.0)
+                confidence = prediction.get('confidence', 'Unknown')
+                reasoning = prediction.get('reasoning', 'No reasoning provided')
+                
+                # Enhanced card with confidence indicator
+                score_color = get_score_color(predicted_score)
+                confidence_class = f"confidence-{confidence.lower()}" if confidence.lower() in ['high', 'medium', 'low'] else "confidence-medium"
+                
+                card_html = f"""
+                <div style="
+                    background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
+                    border: 1px solid #e1e8ed;
+                    border-radius: 16px;
+                    padding: 24px;
+                    margin: 16px 0;
+                    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+                    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                    position: relative;
+                    overflow: hidden;
+                    backdrop-filter: blur(10px);
+                " onmouseover="this.style.transform='translateY(-4px) scale(1.01)'; this.style.boxShadow='0 8px 32px rgba(0,0,0,0.12)'"
+                   onmouseout="this.style.transform='translateY(0) scale(1)'; this.style.boxShadow='0 4px 20px rgba(0,0,0,0.08)'">
+                    
+                    <div style="
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        width: 5px;
+                        height: 100%;
+                        background: linear-gradient(180deg, {score_color}, {score_color}dd);
+                        border-radius: 0 4px 4px 0;
+                    "></div>
+                    
+                    <div style="
+                        display: flex; 
+                        justify-content: space-between; 
+                        align-items: flex-start; 
+                        margin-bottom: 16px;
+                        flex-wrap: wrap;
+                        gap: 12px;
+                    ">
+                        <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <h4 style="
+                                margin: 0;
+                                color: #2c3e50;
+                                font-size: 1.3em;
+                                font-weight: 700;
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                                letter-spacing: -0.3px;
+                            ">{html.escape(member_name)}</h4>
+                            <span class="confidence-badge {confidence_class}">{confidence}</span>
+                        </div>
+                        <div style="
+                            background: linear-gradient(135deg, {score_color}, {score_color}dd);
+                            color: white;
+                            padding: 10px 16px;
+                            border-radius: 25px;
+                            font-weight: 700;
+                            font-size: 1.3em;
+                            min-width: 60px;
+                            text-align: center;
+                            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+                            letter-spacing: -0.5px;
+                        ">{predicted_score}</div>
+                    </div>
+                    
+                    <div style="
+                        color: #5a6c7d;
+                        line-height: 1.6;
+                        font-size: 1.0em;
+                        margin-top: 12px;
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                        padding: 16px;
+                        background: rgba(248, 249, 255, 0.6);
+                        border-radius: 12px;
+                        border: 1px solid rgba(225, 232, 237, 0.6);
+                    ">{html.escape(reasoning)}</div>
+                    
+                    <!-- Subtle decorative element -->
+                    <div style="
+                        position: absolute;
+                        top: -50px;
+                        right: -50px;
+                        width: 100px;
+                        height: 100px;
+                        background: radial-gradient(circle, {score_color}10, transparent);
+                        border-radius: 50%;
+                        pointer-events: none;
+                    "></div>
+                </div>
+                """
+                st.markdown(card_html, unsafe_allow_html=True)
 
-        prompt = f"""Based on the following member review data in CSV format:
-{data_text}
+            # Enhanced summary statistics with beautiful design
+            if len(predictions) > 1:
+                st.markdown("---")
+                st.markdown("## 📊 Prediction Summary")
+                
+                try:
+                    # Safely extract scores with validation
+                    scores = []
+                    for pred in predictions:
+                        try:
+                            score = float(pred.get('predicted_score', 0.0))
+                            scores.append(max(0.0, min(5.0, score)))  # Clamp values
+                        except (ValueError, TypeError):
+                            scores.append(0.0)
+                    
+                    confidences = [str(pred.get('confidence', 'Unknown')).lower() for pred in predictions]
+                    
+                    # Calculate statistics safely
+                    total_members = len(predictions) if predictions else 0
+                    avg_score = sum(scores) / len(scores) if scores and len(scores) > 0 else 0
+                    high_scores = len([s for s in scores if s >= 4.0]) if scores else 0
+                    high_confidence = len([c for c in confidences if c == 'high']) if confidences else 0
+                    
+                    # Create beautiful metric cards
+                    summary_html = f"""
+                    <div class="summary-grid">
+                        <div class="metric-card" style="border-top: 4px solid #3498db;">
+                            <div class="metric-value" style="color: #3498db;">👥 {total_members}</div>
+                            <div class="metric-label">Total Members</div>
+                        </div>
+                        <div class="metric-card" style="border-top: 4px solid #f39c12;">
+                            <div class="metric-value" style="color: #f39c12;">⭐ {avg_score:.1f}</div>
+                            <div class="metric-label">Average Prediction</div>
+                        </div>
+                        <div class="metric-card" style="border-top: 4px solid #e74c3c;">
+                            <div class="metric-value" style="color: #e74c3c;">🔥 {high_scores}</div>
+                            <div class="metric-label">High Ratings (4.0+)</div>
+                        </div>
+                        <div class="metric-card" style="border-top: 4px solid #27ae60;">
+                            <div class="metric-value" style="color: #27ae60;">🎯 {high_confidence}</div>
+                            <div class="metric-label">High Confidence</div>
+                        </div>
+                    </div>
+                    """
+                    st.markdown(summary_html, unsafe_allow_html=True)
+                    
+                    # Additional insight box
+                    if avg_score >= 4.0:
+                        insight_color = "#27ae60"
+                        insight_icon = "🌟"
+                        insight_text = "Excellent predictions! Most members are likely to love this selection."
+                    elif avg_score >= 3.5:
+                        insight_color = "#f39c12"
+                        insight_icon = "👍"
+                        insight_text = "Good predictions! This appears to be a solid book choice for the club."
+                    elif avg_score >= 3.0:
+                        insight_color = "#e67e22"
+                        insight_icon = "📖"
+                        insight_text = "Mixed predictions. Consider member preferences carefully."
+                    else:
+                        insight_color = "#e74c3c"
+                        insight_icon = "🤔"
+                        insight_text = "Lower predictions. You might want to explore alternative selections."
+                    
+                    insight_html = f"""
+                    <div style="
+                        background: linear-gradient(135deg, {insight_color}15, {insight_color}05);
+                        border-left: 4px solid {insight_color};
+                        border-radius: 12px;
+                        padding: 20px;
+                        margin: 20px 0;
+                        backdrop-filter: blur(10px);
+                    ">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 1.5em;">{insight_icon}</span>
+                            <div>
+                                <h4 style="margin: 0 0 8px 0; color: {insight_color}; font-weight: 600;">Book Club Insight</h4>
+                                <p style="margin: 0; color: #5a6c7d; line-height: 1.5;">{insight_text}</p>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                    st.markdown(insight_html, unsafe_allow_html=True)
+                        
+                except Exception:
+                    display_error_card(
+                        "Statistics Error", 
+                        "Unable to calculate summary statistics from predictions.", 
+                        "info"
+                    )
 
-Please analyze the data and provide a table with the following columns:
-- Member
-- Predicted Score
-- Reasoning
+            # Enhanced expandable analysis section
+            with st.expander("🔍 View Comprehensive Analysis Data", expanded=False):
+                
+                # Tabs for better organization
+                tab1, tab2, tab3 = st.tabs(["📊 Member Data", "🤖 AI Prompt", "📈 Statistics"])
+                
+                with tab1:
+                    st.subheader("📋 Complete Member Review History")
+                    comprehensive_data = gather_comprehensive_user_reviews()
+                    if not comprehensive_data.empty:
+                        # Show key columns for analysis with better formatting
+                        display_cols = ['member_name', 'book_title', 'author', 'country', 'rating', 'comment', 'goodreads_avg']
+                        available_cols = [col for col in display_cols if col in comprehensive_data.columns]
+                        
+                        # Add search functionality
+                        search_term = st.text_input("🔍 Search reviews", placeholder="Search by member, book, author...")
+                        
+                        filtered_data = comprehensive_data[available_cols]
+                        if search_term:
+                            # Sanitize search term
+                            search_term = search_term.strip()[:100]  # Limit length
+                            try:
+                                mask = filtered_data.astype(str).apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)
+                                filtered_data = filtered_data[mask]
+                            except Exception:
+                                st.warning("Invalid search term. Showing all results.")
+                        
+                        st.dataframe(
+                            filtered_data,
+                            use_container_width=True,
+                            height=400,
+                            column_config={
+                                "rating": st.column_config.NumberColumn(
+                                    "Rating",
+                                    help="Member's rating (1-5)",
+                                    min_value=1,
+                                    max_value=5,
+                                    step=0.1,
+                                    format="%.1f ⭐"
+                                ),
+                                "goodreads_avg": st.column_config.NumberColumn(
+                                    "Goodreads Avg",
+                                    help="Goodreads average rating",
+                                    min_value=1,
+                                    max_value=5,
+                                    step=0.1,
+                                    format="%.1f"
+                                )
+                            }
+                        )
+                        
+                        st.info(f"📊 Showing {len(filtered_data)} of {len(comprehensive_data)} total reviews")
+                    else:
+                        st.warning("No comprehensive review data available.")
+                
+                with tab2:
+                    st.subheader("🤖 AI Analysis Prompt")
+                    if book_to_predict and book_to_predict.strip():
+                        prompt_preview = build_user_context_prompt(comprehensive_data, book_to_predict.strip())
+                    else:
+                        prompt_preview = build_user_context_prompt(comprehensive_data)
+                    
+                    st.code(prompt_preview, language="text", line_numbers=True)
+                    
+                    # Add copy button functionality
+                    if st.button("📋 Copy Prompt to Clipboard"):
+                        st.info("Prompt copied! (Note: Actual clipboard functionality requires additional setup)")
+                
+                with tab3:
+                    st.subheader("📈 Analysis Statistics")
+                    if not comprehensive_data.empty:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("📚 Total Books Analyzed", comprehensive_data['book_title'].nunique())
+                            st.metric("👥 Total Members", comprehensive_data['member_name'].nunique())
+                            st.metric("💬 Total Reviews", len(comprehensive_data))
+                        
+                        with col2:
+                            avg_rating = comprehensive_data['rating'].mean()
+                            st.metric("⭐ Average Club Rating", f"{avg_rating:.2f}")
+                            
+                            avg_goodreads = comprehensive_data['goodreads_avg'].mean()
+                            st.metric("🌐 Average Goodreads Rating", f"{avg_goodreads:.2f}")
+                            
+                            rating_diff = avg_rating - avg_goodreads
+                            st.metric(
+                                "📊 Club vs Goodreads Difference", 
+                                f"{rating_diff:+.2f}",
+                                delta=f"{rating_diff:+.2f}"
+                            )
+                    else:
+                        st.warning("No data available for statistics calculation.")
 
-The predicted score for each member should reflect their review performance, and please provide a final line indicating the Total score for the whole group.
-
-Output your result in a clear, tabular format.
-"""
-        st.write("Sending prompt to GPT...")
-
-        try:
-            openai_api_key = st.secrets["openai_api_key"]
-        except Exception:
-            st.error("OpenAI API key not found in st.secrets. Please provide your API key.")
-            return
-
-        openai.api_key = openai_api_key
-
-        with st.spinner("Predicting..."):
-            response = openai.Completion.create(
-                engine="text-davinci-003",
-                prompt=prompt,
-                max_tokens=500,
-                temperature=0.7,
+        except Exception as e:
+            loading_container.empty()
+            display_error_card(
+                "Prediction Error", 
+                "An unexpected error occurred. Please check your data and try again.", 
+                "error"
             )
-        prediction = response.choices[0].text.strip()
-
-        st.subheader("Prediction Output")
-        st.text_area("GPT Prediction", prediction, height=300)
 
 
 def view_charts():
