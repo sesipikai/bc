@@ -905,7 +905,9 @@ TASK: Based on each member's complete reading history, predict their likely rati
 3. Comments indicating what they value in books
 4. Rating trends over time
 
-REQUIRED OUTPUT FORMAT (valid JSON only):
+CRITICAL: You MUST respond with ONLY valid JSON. No HTML, no markdown, no formatting, no explanation text - ONLY the JSON object below.
+
+REQUIRED OUTPUT FORMAT:
 {{
   "predictions": [
     {{
@@ -949,12 +951,20 @@ def get_enhanced_predictions(target_book_title=None):
     prompt = build_user_context_prompt(comprehensive_data, target_book_title)
     
     try:
-        # Check if API key exists in secrets
-        if "openai_api_key" not in st.secrets:
-            return {"error": "MISSING: OpenAI API key not found in Streamlit secrets. Please add 'openai_api_key' to your secrets configuration."}
+        # Check if API key exists in secrets (handle both direct and [default] section formats)
+        openai_api_key = None
         
-        # Get OpenAI API key
-        openai_api_key = st.secrets["openai_api_key"]
+        # Try direct access first
+        if "openai_api_key" in st.secrets:
+            openai_api_key = st.secrets["openai_api_key"]
+        # Try [default] section access
+        elif "default" in st.secrets and "openai_api_key" in st.secrets["default"]:
+            openai_api_key = st.secrets["default"]["openai_api_key"]
+        
+        if not openai_api_key:
+            available_keys = list(st.secrets.keys())
+            default_keys = list(st.secrets["default"].keys()) if "default" in st.secrets else []
+            return {"error": f"MISSING: OpenAI API key not found in Streamlit secrets. Available top-level keys: {available_keys}. Default section keys: {default_keys}. Please add 'openai_api_key' to your secrets."}
         
         # Validate API key format
         if not openai_api_key or not openai_api_key.startswith("sk-"):
@@ -973,7 +983,7 @@ def get_enhanced_predictions(target_book_title=None):
                 messages=[
                     {
                         "role": "system", 
-                        "content": "You are a book club expert who analyzes reading patterns. Always respond with valid JSON in the exact format requested."
+                        "content": "You are a book club expert who analyzes reading patterns. You MUST respond with ONLY valid JSON in the exact format requested. Do NOT include any HTML, markdown, or other formatting. Return ONLY the JSON object with 'predictions' array containing member predictions."
                     },
                     {
                         "role": "user", 
@@ -1008,10 +1018,17 @@ def get_enhanced_predictions(target_book_title=None):
             result = json.loads(prediction_json)
             return result
         except json.JSONDecodeError as json_error:
-            return {
-                "error": f"JSON PARSE ERROR: {str(json_error)}", 
-                "raw_response": prediction_json[:1000] if prediction_json else "No response content"
-            }
+            # Check if response contains HTML (common issue)
+            if "<div" in prediction_json or "style=" in prediction_json:
+                return {
+                    "error": "AI returned HTML instead of JSON. This usually means the model misunderstood the prompt.",
+                    "raw_response": prediction_json[:500] + "..." if len(prediction_json) > 500 else prediction_json
+                }
+            else:
+                return {
+                    "error": f"JSON PARSE ERROR: {str(json_error)}", 
+                    "raw_response": prediction_json[:1000] if prediction_json else "No response content"
+                }
     
     except KeyError as key_error:
         return {"error": f"SECRETS ERROR: Missing key in Streamlit secrets: {str(key_error)}. Available secrets keys: {list(st.secrets.keys())}"}
