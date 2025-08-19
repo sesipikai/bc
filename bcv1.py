@@ -949,58 +949,79 @@ def get_enhanced_predictions(target_book_title=None):
     prompt = build_user_context_prompt(comprehensive_data, target_book_title)
     
     try:
+        # Check if API key exists in secrets
+        if "openai_api_key" not in st.secrets:
+            return {"error": "MISSING: OpenAI API key not found in Streamlit secrets. Please add 'openai_api_key' to your secrets configuration."}
+        
         # Get OpenAI API key
         openai_api_key = st.secrets["openai_api_key"]
         
-        # Use modern OpenAI client with JSON mode
-        client = OpenAI(api_key=openai_api_key)
+        # Validate API key format
+        if not openai_api_key or not openai_api_key.startswith("sk-"):
+            return {"error": f"INVALID API KEY: OpenAI API key must start with 'sk-'. Current key starts with: '{openai_api_key[:10]}...' (showing first 10 chars)"}
         
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Use latest efficient model
-            messages=[
-                {
-                    "role": "system", 
-                    "content": "You are a book club expert who analyzes reading patterns. Always respond with valid JSON in the exact format requested."
-                },
-                {
-                    "role": "user", 
-                    "content": prompt
-                }
-            ],
-            response_format={"type": "json_object"},  # Enforce JSON output
-            max_tokens=1500,
-            temperature=0.3  # Lower temperature for more consistent analysis
-        )
+        # Test OpenAI client initialization
+        try:
+            client = OpenAI(api_key=openai_api_key)
+        except Exception as client_error:
+            return {"error": f"CLIENT INIT ERROR: Failed to create OpenAI client: {str(client_error)}"}
         
-        prediction_json = response.choices[0].message.content.strip()
+        # Make API call
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # Use latest efficient model
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You are a book club expert who analyzes reading patterns. Always respond with valid JSON in the exact format requested."
+                    },
+                    {
+                        "role": "user", 
+                        "content": prompt
+                    }
+                ],
+                response_format={"type": "json_object"},  # Enforce JSON output
+                max_tokens=1500,
+                temperature=0.3  # Lower temperature for more consistent analysis
+            )
+        except Exception as api_error:
+            error_msg = str(api_error)
+            if "401" in error_msg:
+                return {"error": f"API AUTH ERROR (401): Invalid OpenAI API key. Full error: {error_msg}"}
+            elif "429" in error_msg:
+                return {"error": f"RATE LIMIT ERROR (429): Too many requests. Full error: {error_msg}"}
+            elif "400" in error_msg:
+                return {"error": f"BAD REQUEST ERROR (400): Invalid request. Full error: {error_msg}"}
+            elif "insufficient_quota" in error_msg.lower():
+                return {"error": f"QUOTA ERROR: OpenAI account has insufficient credits. Full error: {error_msg}"}
+            else:
+                return {"error": f"API CALL ERROR: {error_msg}"}
+        
+        # Extract response content
+        try:
+            prediction_json = response.choices[0].message.content.strip()
+        except Exception as extract_error:
+            return {"error": f"RESPONSE EXTRACT ERROR: Failed to extract content from OpenAI response: {str(extract_error)}. Response: {str(response)[:500]}"}
         
         # Parse JSON response
         try:
             result = json.loads(prediction_json)
             return result
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as json_error:
             return {
-                "error": "Failed to parse AI response. Please try again.", 
-                "raw_response": prediction_json if len(prediction_json) < 1000 else "Response too long to display"
+                "error": f"JSON PARSE ERROR: {str(json_error)}", 
+                "raw_response": prediction_json[:1000] if prediction_json else "No response content"
             }
     
+    except KeyError as key_error:
+        return {"error": f"SECRETS ERROR: Missing key in Streamlit secrets: {str(key_error)}. Available secrets keys: {list(st.secrets.keys())}"}
+    except ImportError as import_error:
+        return {"error": f"IMPORT ERROR: {str(import_error)}. Check if OpenAI library is installed correctly."}
     except Exception as e:
-        # Provide specific error handling for common OpenAI issues
+        # Catch-all with full error details for debugging
+        error_type = type(e).__name__
         error_msg = str(e)
-        if "401" in error_msg or "authentication" in error_msg.lower() or "api_key" in error_msg.lower():
-            return {"error": "OpenAI API authentication failed. Please check your API key."}
-        elif "429" in error_msg or "rate_limit" in error_msg.lower():
-            return {"error": "OpenAI API rate limit exceeded. Please try again in a few minutes."}
-        elif "400" in error_msg or "bad_request" in error_msg.lower():
-            return {"error": "OpenAI API request error. The input may be too long or invalid."}
-        elif "openai_api_key" in str(type(e)).lower():
-            return {"error": "OpenAI API key is missing from Streamlit secrets configuration."}
-        elif "importerror" in str(type(e)).lower() or "modulenotfounderror" in str(type(e)).lower():
-            return {"error": "OpenAI library not found. Please check requirements.txt installation."}
-        else:
-            # For debugging - show actual error but sanitize sensitive data
-            safe_error = error_msg.replace(st.secrets.get("openai_api_key", ""), "[API_KEY]") if "openai_api_key" in st.secrets else error_msg
-            return {"error": f"Prediction failed: {safe_error}"}
+        return {"error": f"UNEXPECTED ERROR ({error_type}): {error_msg}. Please share this error message for debugging."}
 
 
 def parse_llm_prediction(prediction_text):
